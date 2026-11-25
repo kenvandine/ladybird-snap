@@ -1,0 +1,146 @@
+name: ladybird
+base: core26
+adopt-info: ladybird
+summary: A truly independent web browser
+description: |
+  Ladybird is a new web browser with an independent engine, built with a
+  web standards first approach. This builds the upstream alpha release from source.
+  Alpha software is intended for testing, not everyday browsing.
+grade: devel
+confinement: strict
+license: BSD-2-Clause
+website: https://ladybird.org
+issues: https://github.com/LadybirdBrowser/ladybird/issues
+
+platforms:
+  amd64:
+
+# The Vulkan and GLVND loaders only look in /etc, where the GPU provider's files do not appear.
+layout:
+  /etc/vulkan:
+    bind: $SNAP/gpu-2604/mesa-2604/usr/share/vulkan
+  /etc/glvnd:
+    bind: $SNAP/gpu-2604/mesa-2604/usr/share/glvnd
+
+apps:
+  ladybird:
+    command: usr/lib/ladybird/bin/Ladybird
+    desktop: usr/share/applications/org.ladybird.Ladybird.desktop
+    extensions: [gnome]
+    environment:
+      QT_PLUGIN_PATH: $SNAP/usr/lib/$CRAFT_ARCH_TRIPLET_BUILD_FOR/qt6/plugins
+    plugs:
+      - audio-playback
+      - browser-support
+      - home
+      - network
+      - network-bind
+      - removable-media
+
+parts:
+  ladybird:
+    plugin: nil
+    source: https://github.com/LadybirdBrowser/ladybird.git
+    source-type: git
+    source-tag: 2026.47.7
+    source-depth: 1
+    parse-info: [usr/share/metainfo/org.ladybird.Ladybird.metainfo.xml]
+    # Mirrors the Ubuntu build dependencies of Meta/Docker/ci/install-build-dependencies.sh.
+    build-packages:
+      - autoconf
+      - autoconf-archive
+      - automake
+      - build-essential
+      - ca-certificates
+      - clang-22
+      - cmake
+      - curl
+      - dpkg-dev
+      - file
+      - git
+      - glslang-tools
+      - libclang-rt-22-dev
+      - libdrm-dev
+      - libegl1-mesa-dev
+      - libgl1-mesa-dev
+      - libncurses-dev
+      - libpulse-dev
+      - libstdc++-16-dev
+      - libtool
+      - libwayland-dev
+      - libxcb-icccm4-dev
+      - lld-22
+      - llvm-22
+      - nasm
+      - ninja-build
+      - pkg-config
+      - python3
+      - python3-venv
+      - qt6-base-dev
+      - qt6-positioning-dev
+      - qt6-tools-dev-tools
+      - rustup
+      - tar
+      - unzip
+      - xz-utils
+      - zip
+    stage-packages:
+      - fonts-liberation2
+      - libqt6core6t64
+      - libqt6dbus6
+      - libqt6gui6
+      - libqt6network6
+      - libqt6positioning6
+      - libqt6svg6
+      - libqt6widgets6
+      - qt6-gtk-platformtheme
+      - qt6-wayland
+    override-pull: |
+      craftctl default
+      craftctl set version="$(git describe --tags --abbrev=0)"
+    override-build: |
+      # The gnome extension's SDK headers would shadow the toolchain's own and break the build.
+      unset LD_LIBRARY_PATH PKG_CONFIG_PATH CMAKE_PREFIX_PATH PYTHONPATH GI_TYPELIB_PATH ACLOCAL_PATH GETTEXTDATADIRS
+      PATH="$(echo "$PATH" | tr ':' '\n' | grep -v gnome-core26-sdk | paste -sd:)"
+
+      llvm_bin="$CRAFT_PART_BUILD/llvm-bin"
+      mkdir -p "$llvm_bin"
+      for tool in clang clang++ ld.lld lld llvm-symbolizer; do
+        ln -sf "/usr/bin/${tool}-22" "$llvm_bin/$tool"
+      done
+      export PATH="$llvm_bin:$PATH" CC=clang CXX=clang++ LADYBIRD_SOURCE_DIR="$PWD"
+
+      # The archive's Rust predates the release pinned in rust-toolchain.toml.
+      export RUSTUP_HOME="$CRAFT_PART_BUILD/rustup" CARGO_HOME="$CRAFT_PART_BUILD/cargo"
+      rust_toolchain="$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)"
+      rustup toolchain install --profile minimal "$rust_toolchain"
+      export RUSTUP_TOOLCHAIN="$rust_toolchain"
+
+      version="$(git describe --tags --abbrev=0)"
+      ./Meta/ladybird.py vcpkg --preset Distribution
+      # Helpers discard LD_LIBRARY_PATH, so they find the platform and GPU libraries (such as the Vulkan loader)
+      # through RUNPATH; $ORIGIN is $SNAP/usr/lib/ladybird/{bin,libexec}.
+      triplet="$CRAFT_ARCH_TRIPLET_BUILD_FOR"
+      snap_root='$ORIGIN/../../../..'
+      rpath=""
+      for dir in "usr/lib/$triplet" "gnome-platform/usr/lib/$triplet" "gnome-platform/usr/lib/$triplet/pulseaudio" "gpu-2604/mesa-2604/usr/lib/$triplet"; do
+        rpath="$rpath -Wl,-rpath,'$snap_root/$dir'"
+      done
+      cmake --preset Distribution -B Build \
+        "-DCMAKE_EXE_LINKER_FLAGS=-Wl,--enable-new-dtags$rpath" \
+        -DLADYBIRD_VERSION="$version" \
+        -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
+        -DCMAKE_INSTALL_PREFIX=/usr/lib/ladybird \
+        -DCMAKE_INSTALL_LIBDIR=lib
+      cmake --build Build -j"$CRAFT_PARALLEL_BUILD_COUNT"
+      for component in ladybird_Runtime ladybird_SystemIntegration; do
+        DESTDIR="$CRAFT_PART_INSTALL" cmake --install Build --component "$component"
+      done
+
+      sed -i \
+        -e 's|^Exec=.*/bin/Ladybird|Exec=ladybird|' \
+        -e 's|^Icon=org.ladybird.Ladybird$|Icon=${SNAP}/usr/share/icons/hicolor/scalable/apps/org.ladybird.Ladybird.svg|' \
+        "$CRAFT_PART_INSTALL/usr/share/applications/org.ladybird.Ladybird.desktop"
+    prime:
+      - -usr/bin/ladybird
+      - -usr/share/dbus-1/services/org.ladybird.Ladybird.service
