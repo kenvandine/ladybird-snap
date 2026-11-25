@@ -118,8 +118,10 @@ parts:
 
       version="$(git describe --tags --abbrev=0)"
       ./Meta/ladybird.py vcpkg --preset Distribution
-      # Helpers discard LD_LIBRARY_PATH, so they find the platform and GPU libraries (such as the Vulkan loader)
-      # through RUNPATH; $ORIGIN is $SNAP/usr/lib/ladybird/{bin,libexec}.
+      # Helpers discard LD_LIBRARY_PATH, so they find the platform and GPU libraries through the executable's rpath;
+      # $ORIGIN is $SNAP/usr/lib/ladybird/{bin,libexec}. It must be DT_RPATH (--disable-new-dtags): unlike RUNPATH, it
+      # also applies to libraries that the Vulkan loader dlopens (the ICD, such as libvulkan_radeon.so) and to their
+      # dependencies (such as libLLVM), which are otherwise not found and leave the browser without GPU acceleration.
       triplet="$CRAFT_ARCH_TRIPLET_BUILD_FOR"
       snap_root='$ORIGIN/../../../..'
       rpath=""
@@ -127,7 +129,7 @@ parts:
         rpath="$rpath -Wl,-rpath,'$snap_root/$dir'"
       done
       cmake --preset Distribution -B Build \
-        "-DCMAKE_EXE_LINKER_FLAGS=-Wl,--enable-new-dtags$rpath" \
+        "-DCMAKE_EXE_LINKER_FLAGS=-Wl,--disable-new-dtags$rpath" \
         -DLADYBIRD_VERSION="$version" \
         -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
         -DCMAKE_INSTALL_PREFIX=/usr/lib/ladybird \
@@ -144,3 +146,21 @@ parts:
     prime:
       - -usr/bin/ladybird
       - -usr/share/dbus-1/services/org.ladybird.Ladybird.service
+    # Helpers run without LD_LIBRARY_PATH, and the GPU driver's own dependencies (such as the libxml2 that libLLVM
+    # needs) are only found through it, because libLLVM's RUNPATH stops the executable's rpath from applying to them.
+    # Without them no Vulkan driver loads and the browser falls back to CPU painting.
+    override-prime: |
+      craftctl default
+      triplet="$CRAFT_ARCH_TRIPLET_BUILD_FOR"
+      ladybird_dir="$CRAFT_PRIME/usr/lib/ladybird"
+      mkdir -p "$ladybird_dir/libexec-real"
+      for helper in Compositor SystemProbe VideoDecoderServer; do
+        mv "$ladybird_dir/libexec/$helper" "$ladybird_dir/libexec-real/$helper"
+        cat > "$ladybird_dir/libexec/$helper" <<EOF
+      #!/bin/sh
+      snap_root="\${0%/*}/../../../.."
+      export LD_LIBRARY_PATH="\$snap_root/gpu-2604/mesa-2604/usr/lib/$triplet:\$snap_root/gnome-platform/usr/lib/$triplet\${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}"
+      exec "\${0%/*}/../libexec-real/$helper" "\$@"
+      EOF
+        chmod 755 "$ladybird_dir/libexec/$helper"
+      done
