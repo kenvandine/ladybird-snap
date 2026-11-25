@@ -30,7 +30,9 @@ apps:
     environment:
       QT_PLUGIN_PATH: $SNAP/usr/lib/$CRAFT_ARCH_TRIPLET_BUILD_FOR/qt6/plugins
     plugs:
+      - audio-record
       - audio-playback
+      - camera
       - browser-support
       - home
       - network
