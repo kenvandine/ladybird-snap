@@ -147,19 +147,21 @@ parts:
       - -usr/bin/ladybird
       - -usr/share/dbus-1/services/org.ladybird.Ladybird.service
     # Helpers run without LD_LIBRARY_PATH, and the GPU driver's own dependencies (such as the libxml2 that libLLVM
-    # needs) are only found through it, because libLLVM's RUNPATH stops the executable's rpath from applying to them.
-    # Without them no Vulkan driver loads and the browser falls back to CPU painting.
+    # needs, or libpulsecommon for libpulse) are only found through it, because those libraries' own RUNPATHs stop the
+    # executable's rpath from applying to them. Without them no Vulkan driver loads and the browser falls back to CPU
+    # painting, and the AudioServer fails to start.
     override-prime: |
       craftctl default
       triplet="$CRAFT_ARCH_TRIPLET_BUILD_FOR"
       ladybird_dir="$CRAFT_PRIME/usr/lib/ladybird"
       mkdir -p "$ladybird_dir/libexec-real"
-      for helper in Compositor SystemProbe VideoDecoderServer; do
+      for helper in AudioServer Compositor SystemProbe VideoDecoderServer; do
+        rm -f "$ladybird_dir/libexec-real/$helper"
         mv "$ladybird_dir/libexec/$helper" "$ladybird_dir/libexec-real/$helper"
         cat > "$ladybird_dir/libexec/$helper" <<EOF
       #!/bin/sh
       snap_root="\${0%/*}/../../../.."
-      export LD_LIBRARY_PATH="\$snap_root/gpu-2604/mesa-2604/usr/lib/$triplet:\$snap_root/gnome-platform/usr/lib/$triplet\${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}"
+      export LD_LIBRARY_PATH="\$snap_root/gpu-2604/mesa-2604/usr/lib/$triplet:\$snap_root/gnome-platform/usr/lib/$triplet:\$snap_root/gnome-platform/usr/lib/$triplet/pulseaudio\${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}"
       exec "\${0%/*}/../libexec-real/$helper" "\$@"
       EOF
         chmod 755 "$ladybird_dir/libexec/$helper"
